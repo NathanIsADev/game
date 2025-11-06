@@ -8,8 +8,10 @@
   :root{--bg:#041018;--fg:#dff7ff;--neon:#7be26b;--accent:#9fe3ff;--glass:rgba(255,255,255,0.03);--btn-light:rgba(255,255,255,0.06)}
   html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial}
   body{display:grid;place-items:center;background:linear-gradient(180deg,#020812 0%,#041018 100%);color:var(--fg)}
-  .wrap{width:820px;max-width:96vw;background:rgba(255,255,255,0.02);padding:16px;border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,0.6)}
-  canvas{display:block;background:#031018;border-radius:10px;width:100%;height:460px}
+  .wrap{width:820px;max-width:96vw;background:rgba(255,255,255,0.02);padding:16px;border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,0.6); position:relative;}
+  /* canvas container so we can position on-screen touch controls relative to it */
+  .canvas-wrap{position:relative}
+  canvas{display:block;background:#031018;border-radius:10px;width:100%;height:460px; touch-action: none; -ms-touch-action: none; -webkit-user-select: none; user-select: none;}
   header{display:flex;align-items:center;gap:12px;margin-bottom:10px}
   h1{font-size:18px;margin:0}
   .hud{margin-top:10px;display:flex;gap:10px;align-items:center}
@@ -18,6 +20,37 @@
   .controls{font-size:13px;opacity:0.9}
   .highlight{background:var(--btn-light);border-color:rgba(255,255,255,0.08)}
   .ui-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+
+  /* touch control buttons (large, semi-transparent for thumbs) */
+  .touch-btn{
+    position:absolute;
+    bottom:12px;
+    width:46%;
+    height:96px;
+    border-radius:12px;
+    background:rgba(255,255,255,0.03);
+    border:1px solid rgba(255,255,255,0.04);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:16px;
+    color:var(--fg);
+    user-select:none;
+    -webkit-user-select:none;
+    touch-action: none;
+    -ms-touch-action:none;
+    cursor: pointer;
+    transition: background 150ms, transform 80ms;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+  }
+  .touch-btn:active{ transform: translateY(2px) scale(0.995); }
+  .touch-left{ left:4%; }
+  .touch-right{ right:4%; }
+  .touch-hint{ position:absolute; left:50%; transform:translateX(-50%); bottom:8px; font-size:12px; opacity:0.7; pointer-events:none; }
+  /* make the buttons less obtrusive when desktop mouse is used */
+  @media (pointer:fine){
+    .touch-btn{ opacity:0.0; pointer-events:none; }
+  }
 </style>
 </head>
 <body>
@@ -28,7 +61,17 @@
         <div class="small">Use ← → to move • P to pause</div>
       </div>
     </header>
-    <canvas id="c" width="800" height="460"></canvas>
+
+    <!-- canvas + touch buttons container -->
+    <div class="canvas-wrap">
+      <canvas id="c" width="800" height="460"></canvas>
+
+      <!-- On-screen touch buttons — large targets for thumbs. Hidden (pointer-events:none) on fine-pointer devices -->
+      <div id="touchLeft" class="touch-btn touch-left" aria-hidden="false">◀</div>
+      <div id="touchRight" class="touch-btn touch-right" aria-hidden="false">▶</div>
+      <div class="touch-hint">Tap left/right or drag to move</div>
+    </div>
+
     <div class="hud">
       <div class="small">Score: <strong id="score">0</strong></div>
       <div class="small">Best: <strong id="best">0</strong></div>
@@ -38,6 +81,7 @@
       <div style="flex:1"></div>
     </div>
   </div>
+
 <script>
 (() => {
   const canvas = document.getElementById('c');
@@ -48,6 +92,10 @@
   const restartBtn = document.getElementById('restart');
   const pauseBtn = document.getElementById('pause');
   const continueBtn = document.getElementById('continueBtn');
+
+  // touch buttons
+  const touchLeftBtn = document.getElementById('touchLeft');
+  const touchRightBtn = document.getElementById('touchRight');
 
   // Player
   const player = {x: w/2, y: h-60, w:28, h:28, vx:0, speed:6, pulse:0};
@@ -345,7 +393,107 @@
   }
 
   // responsive (keeps internal resolution fixed so gameplay stays consistent)
-  window.addEventListener('resize', () => {});
+  window.addEventListener('resize', () => { /* no-op for now */ });
+
+  // --- TOUCH / POINTER handling additions ---
+
+  // Keep track of active pointer(s) so pointerup only clears the pointer that started it
+  const activePointers = new Map(); // pointerId => {side: 'left'|'right'}
+
+  // Helper to set key state for a side
+  function setSideActive(side, active, pointerId){
+    if(active){
+      activePointers.set(pointerId, { side });
+    } else {
+      activePointers.delete(pointerId);
+    }
+    // If any active pointer says left -> left true. If any active pointer says right -> right true.
+    let anyLeft = false, anyRight = false;
+    for(const v of activePointers.values()){
+      if(v.side === 'left') anyLeft = true;
+      if(v.side === 'right') anyRight = true;
+    }
+    keys.left = anyLeft;
+    keys.right = anyRight;
+    updatePlayerVelocity();
+  }
+
+  // Pointerdown on the canvas: decide side based on x coordinate
+  canvas.addEventListener('pointerdown', (e) => {
+    // only respond to primary button / touch/stylus
+    if(e.button && e.pointerType === 'mouse') return;
+    canvas.setPointerCapture(e.pointerId);
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (canvas.width / rect.width); // transform to canvas coordinate if scaled
+    const side = (x < canvas.width/2) ? 'left' : 'right';
+    setSideActive(side, true, e.pointerId);
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    if(!activePointers.has(e.pointerId)) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const newSide = (x < canvas.width/2) ? 'left' : 'right';
+    const prev = activePointers.get(e.pointerId);
+    if(prev && prev.side !== newSide){
+      // update that pointer's side
+      setSideActive(prev.side, false, e.pointerId);
+      setSideActive(newSide, true, e.pointerId);
+    }
+  });
+
+  canvas.addEventListener('pointerup', (e) => {
+    canvas.releasePointerCapture?.(e.pointerId);
+    setSideActive(null, false, e.pointerId);
+  });
+  canvas.addEventListener('pointercancel', (e) => {
+    canvas.releasePointerCapture?.(e.pointerId);
+    setSideActive(null, false, e.pointerId);
+  });
+
+  // Touch buttons (separately) — good for people who prefer visible buttons.
+  // Use pointer events so behavior is identical for touch and mouse.
+  touchLeftBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    touchLeftBtn.setPointerCapture?.(e.pointerId);
+    setSideActive('left', true, 'touch-left-' + e.pointerId);
+  });
+  touchLeftBtn.addEventListener('pointerup', (e) => {
+    touchLeftBtn.releasePointerCapture?.(e.pointerId);
+    setSideActive(null, false, 'touch-left-' + e.pointerId);
+  });
+  touchLeftBtn.addEventListener('pointercancel', (e) => {
+    touchLeftBtn.releasePointerCapture?.(e.pointerId);
+    setSideActive(null, false, 'touch-left-' + e.pointerId);
+  });
+
+  touchRightBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    touchRightBtn.setPointerCapture?.(e.pointerId);
+    setSideActive('right', true, 'touch-right-' + e.pointerId);
+  });
+  touchRightBtn.addEventListener('pointerup', (e) => {
+    touchRightBtn.releasePointerCapture?.(e.pointerId);
+    setSideActive(null, false, 'touch-right-' + e.pointerId);
+  });
+  touchRightBtn.addEventListener('pointercancel', (e) => {
+    touchRightBtn.releasePointerCapture?.(e.pointerId);
+    setSideActive(null, false, 'touch-right-' + e.pointerId);
+  });
+
+  // Prevent accidental page scrolling on touch devices while touching canvas or touch buttons
+  // (touch-action: none on canvas and buttons handles most browsers; this is a safe fallback)
+  ['touchstart','touchmove'].forEach(ev => {
+    window.addEventListener(ev, (e) => {
+      // if the touch is inside the canvas-wrap, prevent default to avoid page scrolling
+      const t = e.target;
+      if(t && (t === canvas || t === touchLeftBtn || t === touchRightBtn || t.closest?.('.canvas-wrap'))){
+        e.preventDefault();
+      }
+    }, { passive: false });
+  });
+
+  // --- END TOUCH / POINTER handling additions ---
 
   // start
   lastTime = performance.now(); lastSpawn = performance.now() + 300; requestAnimationFrame(loop);
