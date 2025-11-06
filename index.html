@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Dodge — Neon Run</title>
+<style>
+  :root{--bg:#041018;--fg:#dff7ff;--neon:#7be26b;--accent:#9fe3ff;--glass:rgba(255,255,255,0.03);--btn-light:rgba(255,255,255,0.06)}
+  html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial}
+  body{display:grid;place-items:center;background:linear-gradient(180deg,#020812 0%,#041018 100%);color:var(--fg)}
+  .wrap{width:820px;max-width:96vw;background:rgba(255,255,255,0.02);padding:16px;border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,0.6)}
+  canvas{display:block;background:#031018;border-radius:10px;width:100%;height:460px}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+  h1{font-size:18px;margin:0}
+  .hud{margin-top:10px;display:flex;gap:10px;align-items:center}
+  .btn{background:var(--glass);border:1px solid rgba(255,255,255,0.04);padding:8px 12px;border-radius:10px;cursor:pointer;color:var(--fg)}
+  .small{font-size:13px;opacity:0.95}
+  .controls{font-size:13px;opacity:0.9}
+  .highlight{background:var(--btn-light);border-color:rgba(255,255,255,0.08)}
+  .ui-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Dodge — Neon Run</h1>
+      <div class="ui-right">
+        <div class="small">Use ← → to move • P to pause</div>
+      </div>
+    </header>
+    <canvas id="c" width="800" height="460"></canvas>
+    <div class="hud">
+      <div class="small">Score: <strong id="score">0</strong></div>
+      <div class="small">Best: <strong id="best">0</strong></div>
+      <button id="restart" class="btn">Restart</button>
+      <button id="continueBtn" class="btn">Continue</button>
+      <button id="pause" class="btn">Pause</button>
+      <div style="flex:1"></div>
+    </div>
+  </div>
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let w = canvas.width, h = canvas.height;
+  let scoreEl = document.getElementById('score');
+  let bestEl = document.getElementById('best');
+  const restartBtn = document.getElementById('restart');
+  const pauseBtn = document.getElementById('pause');
+  const continueBtn = document.getElementById('continueBtn');
+
+  // Player
+  const player = {x: w/2, y: h-60, w:28, h:28, vx:0, speed:6, pulse:0};
+  // Enemies array
+  let enemies = [];
+  let lastSpawn = 0, spawnInterval = 900; // ms
+  let lastTime = performance.now();
+  let running = true; // game running (not paused)
+  let alive = true;   // player alive
+  let score = 0;
+  let best = Number(localStorage.getItem('dodge_best')||0);
+  bestEl.textContent = best;
+
+  // particles (sparks) and trails
+  let particles = [];
+  let trails = [];
+
+  // background code rain columns
+  const columns = [];
+  for(let i=0;i<60;i++) columns.push({x: Math.random()*w, y: Math.random()*-h, speed: 20 + Math.random()*40, len: 6 + Math.random()*20});
+
+  // shards for game-over (precomputed for subtle slow motion)
+  const shards = [];
+  for(let i=0;i<28;i++) shards.push({x: Math.random()*w, y: h/2 + 20 + (Math.random()*120 - 60), s: 2 + Math.random()*6, phase: Math.random()*Math.PI*2});
+
+  function spawn() {
+    const width = 24 + Math.random()*36; // keep block-like formation
+    const height = 16 + Math.random()*36;
+    enemies.push({x: Math.random()*(w-width), y:-height-20, w:width, h:height, vy:1.6 + Math.random()*2.4, codeSeed: Math.random()*1000, glow: 0});
+  }
+
+  function reset(){
+    enemies = [];
+    particles = [];
+    trails = [];
+    player.x = w/2;
+    score = 0;
+    lastSpawn = performance.now();
+    running = true;
+    alive = true;
+    updateButtonHighlights(false);
+  }
+
+  function collide(a,b){
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+
+  function update(dt){
+    if(!running) return; // paused: freeze gameplay
+    if(!alive) return;
+
+    // player pulse for glow effect
+    player.pulse += dt * 6;
+
+    // move player
+    player.x += player.vx * dt*60;
+    if(player.x < 0) player.x = 0;
+    if(player.x + player.w > w) player.x = w - player.w;
+
+    // spawn
+    if(performance.now() - lastSpawn > spawnInterval){
+      spawn();
+      lastSpawn = performance.now();
+      spawnInterval = Math.max(300, spawnInterval - 8.5);
+    }
+
+    // enemy updates
+    for(let i=enemies.length-1;i>=0;i--){
+      const e = enemies[i];
+      e.y += e.vy * dt*60;
+      e.vy += 0.003 * dt*60; // slight gravity
+      e.glow = Math.min(1, e.glow + 0.02);
+      // tiny code particles emit from enemies
+      if(Math.random() < 0.006) particles.push({x: e.x + Math.random()*e.w, y: e.y + Math.random()*e.h, vx: (Math.random()-0.5)*0.3, vy: 0.6 + Math.random()*0.6, life: 0.9 + Math.random()*0.6, age:0, size:1 + Math.random()*2, color:'rgba(130,255,150,0.9)'});
+      if(e.y > h) enemies.splice(i,1);
+      else if(collide(player,e)) {
+        alive = false;
+        running = false; // stop updates
+        // update best
+        if(score > best){ best = Math.floor(score); localStorage.setItem('dodge_best', best); bestEl.textContent = best; }
+        // highlight continue + restart buttons
+        updateButtonHighlights(true);
+      }
+    }
+
+    // spawn particles (sparks) when player moves horizontally
+    if(player.vx !== 0){
+      const dir = player.vx > 0 ? -1 : 1; // spawn on opposite side slightly
+      for(let i=0;i<3;i++){
+        particles.push({
+          x: player.x + player.w/2 + (player.w/2 + 2)*dir + (Math.random()-0.5)*8,
+          y: player.y + Math.random()*player.h,
+          vx: (Math.random()*0.6 + 0.6)*dir,
+          vy: (Math.random()-0.5)*0.6,
+          life: 0.3 + Math.random()*0.35,
+          age: 0,
+          size: 2 + Math.random()*3,
+          color: 'rgba(255,236,170,0.95)'
+        });
+      }
+      // trails behind player
+      trails.push({x: player.x + player.w/2, y: player.y + player.h/2, life: 0.35});
+    }
+
+    // update particles
+    for(let i=particles.length-1;i>=0;i--){
+      const p = particles[i];
+      p.x += p.vx * dt*60;
+      p.y += p.vy * dt*60;
+      p.age += dt;
+      if(p.age >= p.life) particles.splice(i,1);
+    }
+
+    // update trails
+    for(let i=trails.length-1;i>=0;i--){
+      trails[i].life -= dt;
+      if(trails[i].life <= 0) trails.splice(i,1);
+    }
+
+    // score
+    if(alive) score += dt*10;
+    scoreEl.textContent = Math.floor(score);
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,w,h);
+
+    // background gradient
+    const bgGrad = ctx.createLinearGradient(0,0,0,h);
+    bgGrad.addColorStop(0,'#021017'); bgGrad.addColorStop(1,'#031016');
+    ctx.fillStyle = bgGrad; ctx.fillRect(0,0,w,h);
+
+    // code rain background columns
+    ctx.globalAlpha = 0.12;
+    ctx.fillStyle = 'rgba(80,220,120,0.85)';
+    ctx.font = '12px monospace';
+    for(const col of columns){
+      col.y += col.speed * 0.02;
+      if(col.y > h + col.len*14) col.y = -col.len*14;
+      for(let k=0;k<col.len;k++){
+        const ch = Math.random() > 0.5 ? '0' : '1';
+        ctx.fillText(ch, col.x, col.y + k*14);
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // subtle vignette
+    ctx.fillStyle = 'rgba(0,0,0,0.06)';
+    ctx.fillRect(0,0,w,h);
+
+    // enemy blocks (code blocks)
+    for(const e of enemies){
+      // base block
+      const grad = ctx.createLinearGradient(e.x, e.y, e.x+e.w, e.y+e.h);
+      grad.addColorStop(0, '#032a18'); grad.addColorStop(1, '#053b1f');
+      ctx.fillStyle = grad;
+      roundRect(ctx, e.x, e.y, e.w, e.h, 5, true);
+
+      // horizontal code lines
+      ctx.fillStyle = 'rgba(123,226,107,0.14)';
+      const lines = Math.floor(e.h / 6);
+      for(let i=0;i<lines;i++){
+        const ly = e.y + 4 + i*6;
+        ctx.fillRect(e.x + 4, ly, e.w - 8, 2);
+      }
+
+      // binary chips flicker
+      ctx.fillStyle = 'rgba(140,255,150,' + (0.18 + 0.08*Math.sin(performance.now()*0.002 + e.codeSeed)) + ')';
+      ctx.font = '10px monospace'; ctx.textBaseline = 'top';
+      for(let i=0;i<6;i++){
+        const bx = e.x + 6 + (i* (e.w-12)/6) + ((i+Math.floor(e.codeSeed))%3 -1);
+        const by = e.y + 6 + ((i*13 + Math.floor(e.codeSeed))% (e.h-12));
+        ctx.fillText(Math.random()>.5? '0' : '1', bx, by);
+      }
+
+      // glow edge
+      if(e.glow>0){ ctx.save(); ctx.globalAlpha = e.glow*0.08; ctx.fillStyle = 'rgba(120,255,140,0.6)'; ctx.fillRect(e.x-3, e.y-3, e.w+6, e.h+6); ctx.restore(); }
+    }
+
+    // player trails (soft)
+    for(const t of trails){
+      const alpha = Math.max(0, t.life/0.35);
+      ctx.fillStyle = 'rgba(160,230,255,' + (alpha*0.12) + ')';
+      ctx.beginPath(); ctx.ellipse(t.x, t.y, 20*alpha, 10*alpha, 0, 0, Math.PI*2); ctx.fill();
+    }
+
+    // player glow and body
+    ctx.save();
+    const pulse = 0.6 + 0.4*Math.abs(Math.sin(player.pulse));
+    ctx.shadowColor = 'rgba(159,227,255,0.5)';
+    ctx.shadowBlur = 12 * pulse;
+    ctx.fillStyle = '#9fe3ff';
+    roundRect(ctx, player.x, player.y, player.w, player.h, 6, true);
+    ctx.restore();
+
+    // spark particles
+    for(const p of particles){
+      const t = 1 - (p.age / p.life);
+      ctx.globalAlpha = t;
+      ctx.fillStyle = p.color || 'rgba(255,240,170,0.9)';
+      // draw as small rotated squares
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate((p.vx||0)*0.6); ctx.fillRect(-p.size/2, -p.size/2, p.size, p.size); ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+
+    // HUD subtle floating matrix particles (very faint)
+    for(let i=0;i<6;i++){
+      ctx.globalAlpha = 0.03;
+      ctx.fillStyle = '#7be26b';
+      ctx.fillText(Math.random()>.5?'0':'1', 20 + i*18 + (performance.now()*0.01)%6, 18 + (i*32 + (performance.now()*0.02))% (h-36));
+    }
+    ctx.globalAlpha = 1;
+
+    // if dead -> gentle game over overlay (no harsh jitter)
+    if(!alive){
+      // dim background
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0,0,w,h);
+      // gentle oscillation for header
+      const slow = Math.sin(performance.now()*0.0006) * 2; // slow small motion
+      ctx.fillStyle = '#fff'; ctx.font = '32px system-ui'; ctx.textAlign = 'center'; ctx.fillText('GAME OVER', w/2 + slow, h/2 - 34);
+      ctx.font = '14px system-ui'; ctx.fillText('You were consumed by the stream', w/2 + slow*0.6, h/2 - 6);
+
+      // draw slow-moving shards (subtle, low alpha)
+      for(const s of shards){
+        const yy = s.y + Math.sin(performance.now()*0.0009 + s.phase) * 6;
+        ctx.globalAlpha = 0.06;
+        ctx.fillStyle = '#7be26b';
+        ctx.fillRect(s.x, yy, s.s, s.s);
+      }
+      ctx.globalAlpha = 1;
+
+      // canvas hint for highlighted buttons (light rectangles)
+      ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 2; ctx.globalAlpha = 0.06; ctx.strokeRect(w/2 - 160, h/2 + 40, 140, 44); ctx.strokeRect(w/2 + 20, h/2 + 40, 140, 44); ctx.restore();
+      return;
+    }
+
+    // paused overlay while alive
+    if(!running && alive){
+      ctx.fillStyle = 'rgba(2,6,8,0.56)'; ctx.fillRect(0,0,w,h);
+      ctx.save(); ctx.fillStyle = '#7be26b'; ctx.font = '30px system-ui'; ctx.textAlign = 'center'; ctx.fillText('PAUSED', w/2, h/2 - 6);
+      ctx.font = '12px system-ui'; ctx.fillText('Press P or Resume to continue', w/2, h/2 + 18);
+      ctx.restore();
+    }
+  }
+
+  function roundRect(ctx,x,y,w,h,r,fill){
+    ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); if(fill) ctx.fill(); else ctx.stroke();
+  }
+
+  // main loop
+  function loop(now){
+    const dt = Math.min(0.033, (now - lastTime)/1000);
+    lastTime = now;
+    update(dt);
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // controls
+  const keys = {};
+  window.addEventListener('keydown', e => {
+    if(e.key === 'ArrowLeft') keys.left = true;
+    if(e.key === 'ArrowRight') keys.right = true;
+    if(e.key.toLowerCase() === 'p') {
+      if(alive) { running = !running; pauseBtn.textContent = running ? 'Pause' : 'Resume'; }
+    }
+    updatePlayerVelocity();
+  });
+  window.addEventListener('keyup', e => {
+    if(e.key === 'ArrowLeft') keys.left = false;
+    if(e.key === 'ArrowRight') keys.right = false;
+    updatePlayerVelocity();
+  });
+
+  function updatePlayerVelocity(){
+    player.vx = 0; if(keys.left) player.vx = -player.speed; if(keys.right) player.vx = player.speed; if(keys.left && keys.right) player.vx = 0;
+  }
+
+  restartBtn.addEventListener('click', () => { reset(); pauseBtn.textContent = 'Pause'; lastTime = performance.now(); });
+  pauseBtn.addEventListener('click', () => { if(alive){ running = !running; pauseBtn.textContent = running ? 'Pause' : 'Resume'; } });
+
+  continueBtn.addEventListener('click', () => {
+    if(!alive){
+      // revive with penalty: remove many enemies and apply score penalty
+      const keep = Math.max(0, Math.floor(enemies.length * 0.35));
+      enemies = enemies.slice(0, keep);
+      alive = true; running = true; score = Math.floor(score * 0.7);
+      pauseBtn.textContent = 'Pause'; updateButtonHighlights(false);
+    }
+  });
+
+  function updateButtonHighlights(dead=false){
+    if(dead){ restartBtn.classList.add('highlight'); continueBtn.classList.add('highlight'); }
+    else { restartBtn.classList.remove('highlight'); continueBtn.classList.remove('highlight'); }
+  }
+
+  // responsive (keeps internal resolution fixed so gameplay stays consistent)
+  window.addEventListener('resize', () => {});
+
+  // start
+  lastTime = performance.now(); lastSpawn = performance.now() + 300; requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
